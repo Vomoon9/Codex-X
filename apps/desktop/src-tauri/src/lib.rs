@@ -284,10 +284,97 @@ fn app_home() -> Result<PathBuf> {
     if let Ok(value) = std::env::var("CODEXX_HOME") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
+            let p = PathBuf::from(trimmed);
+            if !p.components().any(|c| {
+                matches!(
+                    c,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            }) && p.is_absolute()
+            {
+                return Ok(p);
+            }
         }
     }
     Ok(home_dir()?.join(".codexx"))
+}
+
+fn ensure_path_absolute_and_safe(path: &Path) -> Result<()> {
+    if path.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir | std::path::Component::CurDir
+        )
+    }) {
+        return Err(CodexxError::Config(format!(
+            "路径包含非法的 '.' 或 '..' 组件: {}",
+            path.display()
+        )));
+    }
+    if !path.is_absolute() {
+        return Err(CodexxError::Config(format!(
+            "路径必须是绝对路径: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
+    let path_parts: Vec<String> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    for root in roots {
+        let root_parts: Vec<String> = root
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect();
+        if path_parts.len() >= root_parts.len() && path_parts.starts_with(&root_parts) {
+            return true;
+        }
+    }
+    false
+}
+
+fn allowed_codex_roots() -> Result<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    roots.push(home_dir()?);
+    roots.push(default_codex_dir()?);
+    roots.push(app_home()?);
+    Ok(roots)
+}
+
+fn allowed_ccswitch_roots() -> Result<Vec<PathBuf>> {
+    let mut roots = ccswitch_db_candidates()?;
+    roots.push(home_dir()?);
+    roots.push(app_home()?);
+    if let Some(data_dir) = dirs::data_dir() {
+        roots.push(data_dir);
+    }
+    if let Some(data_local_dir) = dirs::data_local_dir() {
+        roots.push(data_local_dir);
+    }
+    let mut unique = Vec::new();
+    for r in roots {
+        if !unique.iter().any(|u| u == &r) {
+            unique.push(r);
+        }
+    }
+    Ok(unique)
+}
+
+fn validate_backup_id(id: &str) -> Result<()> {
+    if id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        Ok(())
+    } else {
+        Err(CodexxError::Config(format!(
+            "非法的备份 ID，只能包含字母、数字、连字符和下划线: {id}"
+        )))
+    }
 }
 
 fn db_path() -> Result<PathBuf> {
@@ -710,13 +797,26 @@ fn default_ccswitch_db_path() -> Result<PathBuf> {
         .ok_or_else(|| CodexxError::Config("无法生成 cc-switch 数据库候选路径".to_string()))
 }
 
-fn import_ccswitch_codex_providers_inner(path: Option<String>) -> Result<ImportResult> {
-    let db = path
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or(default_ccswitch_db_path()?);
+fn resolve_ccswitch_db_path(path: Option<String>) -> Result<PathBuf> {
+    match path.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        Some(p) => {
+            let p = PathBuf::from(p);
+            ensure_path_absolute_and_safe(&p)?;
+            let roots = allowed_ccswitch_roots()?;
+            if !path_under_any(&p, &roots) {
+                return Err(CodexxError::Config(format!(
+                    "非法的 cc-switch 数据库路径，只能位于用户数据目录下: {}",
+                    p.display()
+                )));
+            }
+            Ok(p)
+        }
+        None => default_ccswitch_db_path(),
+    }
+}
 
+fn import_ccswitch_codex_providers_inner(path: Option<String>) -> Result<ImportResult> {
+    let db = resolve_ccswitch_db_path(path)?;
     if !db.exists() {
         let candidates = ccswitch_db_candidates()?
             .into_iter()
@@ -784,20 +884,32 @@ fn default_codex_dir() -> Result<PathBuf> {
     if let Ok(value) = std::env::var("CODEX_HOME") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
+            let p = PathBuf::from(trimmed);
+            if ensure_path_absolute_and_safe(&p).is_ok() {
+                return Ok(p);
+            }
         }
     }
     Ok(home_dir()?.join(".codex"))
 }
 
 fn resolve_codex_dir(config_dir: Option<String>) -> Result<PathBuf> {
-    match config_dir
+    let path = match config_dir
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
     {
-        Some(path) => Ok(PathBuf::from(path)),
-        None => default_codex_dir(),
+        Some(path) => PathBuf::from(path),
+        None => return default_codex_dir(),
+    };
+    ensure_path_absolute_and_safe(&path)?;
+    let roots = allowed_codex_roots()?;
+    if !path_under_any(&path, &roots) {
+        return Err(CodexxError::Config(format!(
+            "非法的 Codex 目录，只能位于用户主目录或 CODEX_HOME 下: {}",
+            path.display()
+        )));
     }
+    Ok(path)
 }
 
 fn config_path(codex_dir: &Path) -> PathBuf {
@@ -811,11 +923,7 @@ fn auth_path(codex_dir: &Path) -> PathBuf {
 fn read_ccswitch_official_auth_inner(
     path: Option<String>,
 ) -> Result<Option<OfficialAuthCandidate>> {
-    let db = path
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or(default_ccswitch_db_path()?);
+    let db = resolve_ccswitch_db_path(path)?;
 
     if !db.exists() {
         return Ok(None);
@@ -2251,7 +2359,12 @@ fn list_backups() -> Result<Vec<BackupEntry>> {
 #[tauri::command]
 fn restore_backup(config_dir: Option<String>, backup_id: String) -> Result<ActionResult> {
     let codex_dir = resolve_codex_dir(config_dir)?;
-    let dir = backup_root()?.join(&backup_id);
+    validate_backup_id(&backup_id)?;
+    let root = backup_root()?;
+    let dir = root.join(&backup_id);
+    if !path_under_any(&dir, &[root.clone()]) {
+        return Err(CodexxError::Config(format!("非法的备份路径: {backup_id}")));
+    }
     if !dir.exists() {
         return Err(CodexxError::Config(format!("备份不存在: {backup_id}")));
     }
@@ -2291,6 +2404,10 @@ fn open_url(url: String) -> std::result::Result<(), String> {
     let trimmed = url.trim().to_string();
     if trimmed.is_empty() {
         return Err("URL 为空".to_string());
+    }
+    let lower = trimmed.to_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err("仅支持 http 或 https 链接".to_string());
     }
 
     // Do not wait for the browser process. On Windows, waiting for `cmd /C start` can
