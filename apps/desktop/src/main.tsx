@@ -506,7 +506,8 @@ function extractOpenAiApiKey(authText?: string) {
   try {
     const parsed = JSON.parse(authText) as { OPENAI_API_KEY?: unknown };
     return typeof parsed.OPENAI_API_KEY === "string" ? parsed.OPENAI_API_KEY : "";
-  } catch {
+  } catch (e) {
+    console.warn("Failed to parse auth.json text as JSON:", e);
     return "";
   }
 }
@@ -861,8 +862,12 @@ function App() {
   const handleActionResult = (result: ActionResult) => {
     setState(result.state);
     setToast(result.message);
-    invoke<BackupEntry[]>("list_backups").then(setBackups).catch(() => undefined);
-    invoke<SavedPrompt[]>("list_saved_prompts").then(setSavedPrompts).catch(() => undefined);
+    invoke<BackupEntry[]>("list_backups")
+      .then(setBackups)
+      .catch((e) => setError(`${lang === "zh" ? "刷新备份失败" : "Failed to refresh backups"}: ${e}`));
+    invoke<SavedPrompt[]>("list_saved_prompts")
+      .then(setSavedPrompts)
+      .catch((e) => setError(`${lang === "zh" ? "刷新提示词失败" : "Failed to refresh prompts"}: ${e}`));
   };
 
   const enableInstruction = () =>
@@ -1043,8 +1048,8 @@ function App() {
   const openExternalUrl = React.useCallback((url?: string | null) => {
     if (!url) return;
     window.setTimeout(() => {
-      void invoke("open_url", { url }).catch(() => {
-        setToast(lang === "zh" ? "打开浏览器失败" : "Failed to open browser");
+      void invoke("open_url", { url }).catch((e) => {
+        setToast(`${lang === "zh" ? "打开浏览器失败" : "Failed to open browser"}: ${e}`);
       });
     }, 0);
   }, [lang]);
@@ -1109,17 +1114,22 @@ function App() {
   }, [state, aboutInfo, checkForUpdates]);
 
   const loadCcSwitchOfficialAuth = async (showToast = true) => {
-    const candidate = await invoke<OfficialAuthCandidate | null>("read_ccswitch_official_auth", { dbPath: null });
-    if (candidate) {
-      setOfficialForm({
-        model: candidate.model || state?.model || "gpt-5.5",
-        authJson: candidate.authJson,
-      });
-      if (showToast) setToast(t.provider.officialAuthLoaded);
-      return true;
+    try {
+      const candidate = await invoke<OfficialAuthCandidate | null>("read_ccswitch_official_auth", { dbPath: null });
+      if (candidate) {
+        setOfficialForm({
+          model: candidate.model || state?.model || "gpt-5.5",
+          authJson: candidate.authJson,
+        });
+        if (showToast) setToast(t.provider.officialAuthLoaded);
+        return true;
+      }
+      if (showToast) setToast(t.provider.officialAuthNotFound);
+      return false;
+    } catch (e) {
+      setError(`${lang === "zh" ? "读取 cc-switch 官方认证失败" : "Failed to read cc-switch official auth"}: ${e}`);
+      return false;
     }
-    if (showToast) setToast(t.provider.officialAuthNotFound);
-    return false;
   };
 
   const openOfficialEdit = () => {
