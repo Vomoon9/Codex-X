@@ -14,11 +14,40 @@ Codex MD 指令文件自动部署脚本
 """
 
 import os
+import re
 import sys
 import shutil
 import argparse
 from pathlib import Path
 from datetime import datetime
+
+
+def allowed_roots():
+    roots = [str(Path.home().resolve())]
+    codex_home = os.environ.get("CODEX_HOME", "")
+    if codex_home:
+        p = os.path.normpath(os.path.abspath(os.path.expanduser(codex_home)))
+        roots.append(p)
+    return roots
+
+
+def is_safe_path(path, roots=None):
+    if roots is None:
+        roots = allowed_roots()
+    try:
+        target = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+    except (ValueError, TypeError, OSError):
+        return False
+    for r in roots:
+        root = os.path.normpath(os.path.abspath(os.path.expanduser(r)))
+        if target == root or target.startswith(root + os.sep):
+            return True
+    return False
+
+
+def sanitize_name(name, fallback="custom"):
+    name = re.sub(r"[^a-zA-Z0-9_\-]", "-", name).strip("-")
+    return name or fallback
 
 # ─── 内置 GPT-5.5 破限指令内容 ─────────────────────────────────────────────
 BUILTIN_GPT55_MD = r"""You are Codex, based on GPT-5.5, running as a coding agent in the Codex CLI on a user's computer.
@@ -53,7 +82,7 @@ BEGIN."""
 
 
 def find_codex_dirs():
-    """扫描系统中所有可能的 .codex 目录"""
+    """扫描系统中所有可能的 .codex 目录，限定在当前用户或 CODEX_HOME 下"""
     candidates = []
 
     # Windows
@@ -62,23 +91,19 @@ def find_codex_dirs():
         localappdata = os.environ.get("LOCALAPPDATA", "")
         home = Path.home()
 
-        search_roots = [
-            Path(userprofile) if userprofile else None,
-            home,
-            Path(localappdata) / "OpenAI" / "Codex" if localappdata else None,
-        ]
-        # 也扫一下常见盘符根目录下的用户目录
-        for drive in ["C:", "D:", "E:"]:
-            dp = Path(drive)
-            if dp.exists():
-                for d in dp.iterdir():
-                    if d.is_dir() and d.name.lower() == "users":
-                        search_roots.append(d)
+        search_roots = []
+        if userprofile:
+            search_roots.append(Path(userprofile))
+        if home:
+            search_roots.append(home)
+        if localappdata:
+            search_roots.append(Path(localappdata) / "OpenAI" / "Codex")
     else:
         home = Path.home()
-        search_roots = [home, Path("/home"), Path("/root")]
+        search_roots = [home]
 
     found = set()
+    roots = allowed_roots()
     for root in search_roots:
         if root is None or not root.exists():
             continue
@@ -90,7 +115,9 @@ def find_codex_dirs():
                     if p.is_dir():
                         config = p / "config.toml"
                         if config.exists():
-                            found.add(str(p.resolve()))
+                            resolved = str(p.resolve())
+                            if is_safe_path(resolved, roots):
+                                found.add(resolved)
         except PermissionError:
             continue
 
@@ -98,7 +125,7 @@ def find_codex_dirs():
     codex_home = os.environ.get("CODEX_HOME", "")
     if codex_home:
         p = Path(codex_home)
-        if p.is_dir() and (p / "config.toml").exists():
+        if is_safe_path(str(p), roots) and p.is_dir() and (p / "config.toml").exists():
             found.add(str(p.resolve()))
 
     return sorted(found)
@@ -161,6 +188,13 @@ def ensure_model_instructions(config_path: Path, md_filename: str) -> bool:
 
 def deploy(args):
     """主部署逻辑"""
+    # 0. 校验目标目录安全
+    if args.codex_dir:
+        if not is_safe_path(args.codex_dir):
+            print(f"[错误] 指定的 Codex 目录不在允许的安全路径下: {args.codex_dir}")
+            print("    允许的路径包括当前用户主目录和 CODEX_HOME 环境变量指定的目录。")
+            sys.exit(1)
+
     # 1. 准备 MD 内容
     if args.file:
         md_path = Path(args.file)
@@ -171,7 +205,8 @@ def deploy(args):
     else:
         md_content = BUILTIN_GPT55_MD
 
-    md_filename = f"{args.name}.md"
+    safe_name = sanitize_name(args.name, "gpt5.5-unrestricted")
+    md_filename = f"{safe_name}.md"
 
     # 2. 扫描 Codex 目录
     codex_dirs = find_codex_dirs()
@@ -187,6 +222,9 @@ def deploy(args):
     if args.dry_run:
         print("\n[DRY RUN] 预览模式，不实际修改。")
         for d in codex_dirs:
+            if not is_safe_path(d):
+                print(f"\n  [跳过非安全路径] {d}")
+                continue
             md_dest = Path(d) / md_filename
             config = Path(d) / "config.toml"
             print(f"\n  目标: {d}")
@@ -196,6 +234,9 @@ def deploy(args):
 
     # 3. 部署到每个 Codex 安装
     for d in codex_dirs:
+        if not is_safe_path(d):
+            print(f"\n── [跳过非安全路径] {d} ──")
+            continue
         codex_root = Path(d)
         config_path = codex_root / "config.toml"
         md_dest = codex_root / md_filename
