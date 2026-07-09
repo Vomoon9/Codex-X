@@ -91,7 +91,7 @@ def find_codex_dirs():
                         config = p / "config.toml"
                         if config.exists():
                             found.add(str(p.resolve()))
-        except PermissionError:
+        except (OSError, PermissionError):
             continue
 
     # 也通过环境变量找

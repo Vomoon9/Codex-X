@@ -508,8 +508,9 @@ fn extract_ccswitch_codex_provider(
     id: &str,
     name: &str,
     settings_config: &str,
-) -> Option<SavedProvider> {
-    let settings: Value = serde_json::from_str(settings_config).ok()?;
+) -> std::result::Result<Option<SavedProvider>, String> {
+    let settings: Value = serde_json::from_str(settings_config)
+        .map_err(|e| format!("settings JSON 解析失败: {e}"))?;
     let auth = settings.get("auth");
     let api_key = auth
         .and_then(|v| v.get("OPENAI_API_KEY"))
@@ -520,9 +521,11 @@ fn extract_ccswitch_codex_provider(
 
     let config_text = settings.get("config").and_then(Value::as_str).unwrap_or("");
     if config_text.trim().is_empty() {
-        return None;
+        return Ok(None);
     }
-    let doc = config_text.parse::<DocumentMut>().ok()?;
+    let doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| format!("config TOML 解析失败: {e}"))?;
     let model = string_value(&doc, "model").unwrap_or_else(|| "gpt-5.5".to_string());
     let active_provider =
         string_value(&doc, "model_provider").unwrap_or_else(|| "custom".to_string());
@@ -538,7 +541,8 @@ fn extract_ccswitch_codex_provider(
         .and_then(|item| item.as_str())
         .or_else(|| doc.get("base_url").and_then(|item| item.as_str()))
         .map(str::trim)
-        .filter(|s| !s.is_empty())?
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "未找到可用 config/base_url，可能是官方登录或空模板".to_string())?
         .trim_end_matches('/')
         .to_string();
 
@@ -563,7 +567,7 @@ fn extract_ccswitch_codex_provider(
         .and_then(|item| item.as_bool())
         .unwrap_or(true);
 
-    Some(SavedProvider {
+    Ok(Some(SavedProvider {
         id: sanitize_id(id),
         provider_name,
         base_url,
@@ -571,7 +575,7 @@ fn extract_ccswitch_codex_provider(
         api_key,
         wire_api,
         requires_openai_auth,
-    })
+    }))
 }
 
 fn push_existing_candidate(candidates: &mut Vec<PathBuf>, candidate: Option<PathBuf>) {
@@ -759,15 +763,19 @@ fn import_ccswitch_codex_providers_inner(path: Option<String>) -> Result<ImportR
     for row in rows {
         let (id, name, settings_config) = row.map_err(|e| CodexxError::Database(e.to_string()))?;
         match extract_ccswitch_codex_provider(&id, &name, &settings_config) {
-            Some(provider) => {
+            Ok(Some(provider)) => {
                 save_provider_inner(provider)?;
                 imported += 1;
             }
-            None => {
+            Ok(None) => {
                 skipped += 1;
                 warnings.push(format!(
                     "跳过 {name} ({id})：未找到可用 config/base_url，可能是官方登录或空模板"
                 ));
+            }
+            Err(reason) => {
+                skipped += 1;
+                warnings.push(format!("跳过 {name} ({id})：{reason}"));
             }
         }
     }
@@ -1225,46 +1233,57 @@ fn scan_rollouts(codex_dir: &Path, target_provider: &str, rewrite: bool) -> Resu
         let has_user_event = text.contains("\"user_message\"") || text.contains("\"user_input\"");
         let mut first_thread_id: Option<String> = None;
         let mut first_cwd: Option<String> = None;
+        let mut line_no: usize = 0;
 
         for segment in text.split_inclusive('\n') {
+            line_no += 1;
             let (line, ending) = split_line_ending(segment);
             let mut next_line = line.to_string();
             if !line.trim().is_empty() {
-                if let Ok(mut record) = serde_json::from_str::<Value>(line) {
-                    if record.get("type").and_then(Value::as_str) == Some("session_meta") {
-                        file_has_meta = true;
-                        scan.session_meta_count += 1;
-                        if let Some(payload) =
-                            record.get_mut("payload").and_then(Value::as_object_mut)
-                        {
-                            if first_thread_id.is_none() {
-                                first_thread_id = payload
-                                    .get("id")
-                                    .and_then(Value::as_str)
-                                    .map(ToString::to_string);
-                            }
-                            if first_cwd.is_none() {
-                                first_cwd = payload
-                                    .get("cwd")
-                                    .and_then(Value::as_str)
-                                    .and_then(normalize_workspace_path);
-                            }
-                            if payload.get("model_provider").and_then(Value::as_str)
-                                != Some(target_provider)
+                match serde_json::from_str::<Value>(line) {
+                    Ok(mut record) => {
+                        if record.get("type").and_then(Value::as_str) == Some("session_meta") {
+                            file_has_meta = true;
+                            scan.session_meta_count += 1;
+                            if let Some(payload) =
+                                record.get_mut("payload").and_then(Value::as_object_mut)
                             {
-                                scan.mismatched_session_meta += 1;
-                                file_changed = true;
-                                if rewrite {
-                                    payload.insert(
-                                        "model_provider".to_string(),
-                                        json!(target_provider),
-                                    );
-                                    next_line = serde_json::to_string(&record)
-                                        .map_err(|e| json_err(&path, e))?;
+                                if first_thread_id.is_none() {
+                                    first_thread_id = payload
+                                        .get("id")
+                                        .and_then(Value::as_str)
+                                        .map(ToString::to_string);
+                                }
+                                if first_cwd.is_none() {
+                                    first_cwd = payload
+                                        .get("cwd")
+                                        .and_then(Value::as_str)
+                                        .and_then(normalize_workspace_path);
+                                }
+                                if payload.get("model_provider").and_then(Value::as_str)
+                                    != Some(target_provider)
+                                {
+                                    scan.mismatched_session_meta += 1;
+                                    file_changed = true;
+                                    if rewrite {
+                                        payload.insert(
+                                            "model_provider".to_string(),
+                                            json!(target_provider),
+                                        );
+                                        next_line = serde_json::to_string(&record)
+                                            .map_err(|e| json_err(&path, e))?;
+                                    }
                                 }
                             }
                         }
                     }
+                    Err(e) if line.trim().starts_with('{') => {
+                        scan.warnings.push(format!(
+                            "JSON 解析失败，已跳过 {} 第 {line_no} 行: {e}",
+                            path.display()
+                        ));
+                    }
+                    _ => {}
                 }
             }
             next.push_str(&next_line);
@@ -2159,7 +2178,7 @@ fn save_provider_toml_config(input: ProviderTomlInput) -> Result<ActionResult> {
     {
         let mut auth_value = if auth.exists() {
             let text = fs::read_to_string(&auth).map_err(|e| io_err(&auth, e))?;
-            serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({}))
+            serde_json::from_str::<Value>(&text).map_err(|e| json_err(&auth, e))?
         } else {
             json!({})
         };
@@ -2223,7 +2242,7 @@ fn switch_provider(input: ProviderInput) -> Result<ActionResult> {
     {
         let mut auth_value = if auth.exists() {
             let text = fs::read_to_string(&auth).map_err(|e| io_err(&auth, e))?;
-            serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({}))
+            serde_json::from_str::<Value>(&text).map_err(|e| json_err(&auth, e))?
         } else {
             json!({})
         };
