@@ -25,700 +25,59 @@ import {
   Zap,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { useI18n, type Lang } from "./i18n";
+import type {
+  ProviderMode,
+  InstructionMode,
+  Tab,
+  SavedProvider,
+  SavedPrompt,
+  BackupEntry,
+  CodexState,
+  ActionResult,
+  ImportResult,
+  OfficialAuthCandidate,
+  AboutInfo,
+  ReleaseInfo,
+  SessionSyncStatus,
+  SessionPreview,
+  SessionSyncResult,
+} from "./types";
+import {
+  cx,
+  providerId,
+  instructionIdFromPath,
+  isInstructionFile,
+  formatSessionTime,
+  compactPath,
+  shortId,
+  releaseAssetForPlatform,
+  compareVersions,
+  buildProviderTomlPreview,
+  buildProviderAuthPreview,
+  extractOpenAiApiKey,
+  LANG_KEY,
+  FALLBACK_GITHUB_REPO,
+  instructionTemplates,
+  defaultProviderForm,
+  blankProviderForm,
+  blankPromptForm,
+} from "./utils";
+import {
+  StatusPill,
+  Field,
+  StatCard,
+  Avatar,
+  OpenAIIcon,
+  JsonPreview,
+  TomlPreview,
+} from "./components";
 import "./styles.css";
-
-type Lang = "zh" | "en";
-type ProviderMode = "list" | "form" | "official";
-type InstructionMode = "list" | "form";
-type Tab = "dashboard" | "provider" | "sessions" | "instruction" | "toml" | "settings" | "about";
-
-type InstructionTemplate = {
-  id: string;
-  filename: string;
-  title: string;
-  subtitle: string;
-  badge: string;
-};
-
-type ProviderSummary = {
-  id: string;
-  name?: string;
-  baseUrl?: string;
-  wireApi?: string;
-  requiresOpenaiAuth?: boolean;
-  isCurrent: boolean;
-};
-
-type SavedProvider = {
-  id: string;
-  providerName: string;
-  baseUrl: string;
-  model: string;
-  apiKey?: string;
-  wireApi: string;
-  requiresOpenaiAuth: boolean;
-};
-
-type SavedPrompt = {
-  id: string;
-  title: string;
-  filename: string;
-  content: string;
-};
-
-type BackupEntry = {
-  id: string;
-  action: string;
-  createdAt: string;
-  path: string;
-  hadConfig: boolean;
-  hadAuth: boolean;
-};
-
-type CodexState = {
-  codexDir: string;
-  configPath: string;
-  authPath: string;
-  configExists: boolean;
-  authExists: boolean;
-  officialAuthAvailable: boolean;
-  model?: string;
-  modelProvider?: string;
-  instructionFile?: string;
-  instructionEnabled: boolean;
-  providers: ProviderSummary[];
-  configText: string;
-  authPreview?: unknown;
-  authText: string;
-  lastBackup?: BackupEntry;
-};
-
-type ActionResult = {
-  ok: boolean;
-  message: string;
-  backupId?: string;
-  state: CodexState;
-};
-
-type ImportResult = {
-  imported: number;
-  skipped: number;
-  warnings: string[];
-  providers: SavedProvider[];
-};
-
-type OfficialAuthCandidate = {
-  authJson: string;
-  model?: string;
-  source: string;
-};
-
-type AboutInfo = {
-  appVersion: string;
-  codexVersion?: string;
-  codexDir: string;
-  projectUrl: string;
-  githubRepo: string;
-};
-
-type ReleaseInfo = {
-  status: "idle" | "checking" | "ok" | "error";
-  latestVersion?: string;
-  htmlUrl?: string;
-  assetName?: string;
-  body?: string;
-  message?: string;
-  hasUpdate?: boolean;
-};
-
-
-type SessionSyncStatus = {
-  codexDir: string;
-  targetProvider: string;
-  rolloutFiles: number;
-  sessionMetaCount: number;
-  mismatchedRollouts: number;
-  mismatchedSessionMeta: number;
-  sqliteDbs: number;
-  sqliteThreads: number;
-  mismatchedThreads: number;
-  needsSync: boolean;
-  backupDir?: string | null;
-  warnings: string[];
-  sessions: SessionPreview[];
-};
-
-type SessionPreview = {
-  id: string;
-  title: string;
-  modelProvider?: string | null;
-  model?: string | null;
-  cwd?: string | null;
-  rolloutPath?: string | null;
-  updatedAtMs?: number | null;
-  archived: boolean;
-  hasUserEvent: boolean;
-  needsSync: boolean;
-};
-
-type SessionSyncResult = {
-  status: SessionSyncStatus;
-  updatedRollouts: number;
-  updatedThreads: number;
-  backupDir: string;
-};
-
-const INSTRUCTION_RELATIVE_UI = "./gpt5.5-unrestricted.md";
-const LANG_KEY = "codexx.lang";
-const FALLBACK_GITHUB_REPO = "yynxxxxx/Codex-X";
-
-const instructionTemplates: InstructionTemplate[] = [
-  {
-    id: "gpt5.5-unrestricted",
-    filename: "gpt5.5-unrestricted.md",
-    title: "gpt-5.5 unrestricted",
-    subtitle: "Codex-X 默认模板，适合 GPT-5.5 / Codex 5.5。",
-    badge: "推荐",
-  },
-  {
-    id: "gpt5.4-unrestricted",
-    filename: "gpt5.4-unrestricted.md",
-    title: "gpt-5.4 unrestricted",
-    subtitle: "兼容旧版 GPT-5.4 / Codex 配置。",
-    badge: "兼容",
-  },
-];
-
-const defaultProviderForm: SavedProvider = {
-  id: "magicai",
-  providerName: "MagicAI",
-  baseUrl: "https://sky1818.com",
-  model: "gpt-5.5",
-  apiKey: "",
-  wireApi: "responses",
-  requiresOpenaiAuth: true,
-};
-
-const blankProviderForm: SavedProvider = {
-  id: "",
-  providerName: "",
-  baseUrl: "",
-  model: "gpt-5.5",
-  apiKey: "",
-  wireApi: "responses",
-  requiresOpenaiAuth: true,
-};
-
-const blankPromptForm: SavedPrompt = {
-  id: "",
-  title: "",
-  filename: "",
-  content: "",
-};
-
-const dict = {
-  zh: {
-    appSubtitle: "切换 · 指令 · 配置",
-    manager: "Codex 配置管理器",
-    load: "加载",
-    refresh: "刷新",
-    nav: {
-      dashboard: "概览",
-      provider: "供应商",
-      sessions: "会话管理",
-      instruction: "指令提示词",
-      toml: "TOML",
-      settings: "设置",
-      about: "关于",
-    },
-    dashboard: {
-      config: "配置文件",
-      found: "已找到",
-      missing: "不存在",
-      provider: "供应商",
-      instruction: "指令提示词状态",
-      enabled: "已启用",
-      disabled: "未启用",
-      auth: "认证文件",
-      currentConfig: "当前 Codex 配置",
-      liveStatus: "实时状态",
-      dir: "目录",
-      configPath: "配置",
-      model: "模型",
-      providerName: "供应商",
-      instructionFile: "指令文件",
-      notSet: "未设置",
-      officialDefault: "官方默认",
-      quickActions: "快捷操作",
-      enableInstruction: "启用指令提示词",
-      disableInstruction: "禁用指令提示词",
-      restoreLatest: "恢复最新备份",
-    },
-    provider: {
-      title: "供应商列表",
-      subtitle: "像 cc-switch 一样管理 Codex 第三方 API。点击卡片可切换，点击 + 添加新供应商。",
-      add: "添加供应商",
-      importCc: "从 cc-switch 导入",
-      edit: "编辑",
-      viewEdit: "编辑",
-      remove: "删除",
-      switch: "切换",
-      current: "当前",
-      official: "官方配置",
-      noRouting: "不支持路由",
-      authReady: "认证文件存在",
-      authMissing: "未找到认证文件",
-      detected: "从 TOML 检测",
-      local: "本地保存",
-      noProviders: "还没有供应商，点击右上角 + 添加。",
-      officialEdit: "OpenAI Official 编辑",
-      officialHint: "官方配置不使用第三方路由；这里可以编辑官方模式下的模型和完整 auth.json（ChatGPT 登录通常包含 access_token / refresh_token / id_token）。",
-      officialUrl: "官方入口",
-      loadOfficialAuth: "从 cc-switch 载入官方认证",
-      officialAuthLoaded: "已载入 cc-switch 官方认证",
-      officialAuthNotFound: "未找到 cc-switch 官方认证",
-      formAdd: "添加新供应商",
-      formEdit: "编辑供应商",
-      formHint: "保存后会写入供应商列表，并同步写入 Codex live 配置。下方可预览将生成的 config.toml。",
-      name: "供应商名称",
-      baseUrl: "Base URL",
-      model: "模型",
-      wireApi: "Wire API",
-      apiKey: "API Key",
-      apiKeyPlaceholder: "留空则不覆盖 auth.json",
-      requiresAuth: "requires_openai_auth",
-      save: "保存到列表",
-      saveAndSwitch: "保存",
-      cancel: "返回列表",
-    },
-    instruction: {
-      title: "一键管理指令提示词",
-      desc: "启用时写入指令提示词文件并设置 model_instructions_file；禁用时只移除 Codex-X 管理的指令提示词字段并删除 md 文件。每次操作前都会创建备份。",
-      enabled: "已启用",
-      disabled: "未启用",
-      unset: "model_instructions_file 未设置",
-      enable: "启用",
-      disable: "禁用 / 删除",
-    },
-    toml: {
-      title: "当前 live TOML 配置",
-      desc: "这里显示的是 Codex 当前正在使用的 ~/.codex/config.toml，不是本地保存的供应商模板。切换供应商后，这里会变成新写入的 live 配置。",
-      loaded: "已读取",
-      missingText: "# config.toml 不存在，执行切换或启用后会自动创建。",
-    },
-    backups: {
-      title: "备份与撤回",
-      empty: "还没有备份。首次写入前会自动创建。",
-      restore: "恢复",
-    },
-    settings: {
-      title: "设置",
-      language: "界面语言",
-      zh: "中文",
-      en: "English",
-      languageDesc: "默认中文，可随时切换。设置会保存在浏览器本地存储。",
-      productName: "产品名",
-      productDesc: "当前名称为 Codex-X，定位是 Codex Switch & Instruct。",
-    },
-    loadingConfig: "正在读取 Codex 配置...",
-    noAuth: "无 auth",
-    authJson: "auth.json",
-  },
-  en: {
-    appSubtitle: "Switch · Instruct · Config",
-    manager: "Codex config manager",
-    load: "Load",
-    refresh: "Refresh",
-    nav: {
-      dashboard: "Overview",
-      provider: "Provider",
-      sessions: "Sessions",
-      instruction: "Prompt",
-      toml: "TOML",
-      settings: "Settings",
-      about: "About",
-    },
-    dashboard: {
-      config: "Config",
-      found: "Found",
-      missing: "Missing",
-      provider: "Provider",
-      instruction: "Instruction Prompt",
-      enabled: "Enabled",
-      disabled: "Disabled",
-      auth: "Auth",
-      currentConfig: "Current Codex config",
-      liveStatus: "Live status",
-      dir: "Directory",
-      configPath: "Config",
-      model: "Model",
-      providerName: "Provider",
-      instructionFile: "Instruction",
-      notSet: "Not set",
-      officialDefault: "Official / Default",
-      quickActions: "Quick actions",
-      enableInstruction: "Enable prompt",
-      disableInstruction: "Disable prompt",
-      restoreLatest: "Restore latest backup",
-    },
-    provider: {
-      title: "Provider list",
-      subtitle: "Manage Codex third-party APIs like cc-switch. Click a row to switch; use + to add a provider.",
-      add: "Add provider",
-      importCc: "Import from cc-switch",
-      edit: "Edit",
-      viewEdit: "Edit",
-      remove: "Delete",
-      switch: "Switch",
-      current: "Current",
-      official: "Official",
-      noRouting: "No routing",
-      authReady: "Auth found",
-      authMissing: "Auth missing",
-      detected: "Detected from TOML",
-      local: "Local",
-      noProviders: "No provider yet. Click + to add one.",
-      officialEdit: "OpenAI Official settings",
-      officialHint: "Official mode does not use third-party routing. You can edit the official model and the full auth.json (ChatGPT login usually contains access_token / refresh_token / id_token).",
-      officialUrl: "Official URL",
-      loadOfficialAuth: "Load official auth from cc-switch",
-      officialAuthLoaded: "Loaded cc-switch official auth",
-      officialAuthNotFound: "No cc-switch official auth found",
-      formAdd: "Add provider",
-      formEdit: "Edit provider",
-      formHint: "Save writes the provider to the list and applies it to the Codex live config. The generated config.toml is previewed below.",
-      name: "Provider name",
-      baseUrl: "Base URL",
-      model: "Model",
-      wireApi: "Wire API",
-      apiKey: "API Key",
-      apiKeyPlaceholder: "Leave blank to keep auth.json unchanged",
-      requiresAuth: "requires_openai_auth",
-      save: "Save",
-      saveAndSwitch: "Save",
-      cancel: "Back",
-    },
-    instruction: {
-      title: "Manage instruction prompt",
-      desc: "Enable writes the instruction prompt file and sets model_instructions_file; disable removes Codex-X-managed instruction prompt config and deletes the md file. Every write creates a backup first.",
-      enabled: "Enabled",
-      disabled: "Disabled",
-      unset: "model_instructions_file is not set",
-      enable: "Enable",
-      disable: "Disable / delete",
-    },
-    toml: {
-      title: "Current live TOML config",
-      desc: "This is the active ~/.codex/config.toml used by Codex, not a saved provider template. After switching providers, this page shows the newly written live config.",
-      loaded: "Loaded",
-      missingText: "# config.toml is missing. It will be created after switching or enabling instruction.",
-    },
-    backups: {
-      title: "Backups & restore",
-      empty: "No backups yet. A backup will be created before the first write.",
-      restore: "Restore",
-    },
-    settings: {
-      title: "Settings",
-      language: "Language",
-      zh: "中文",
-      en: "English",
-      languageDesc: "Chinese is the default. You can switch at any time; the setting is saved locally.",
-      productName: "Product name",
-      productDesc: "Current name is Codex-X, positioned as Codex Switch & Instruct.",
-    },
-    loadingConfig: "Reading Codex config...",
-    noAuth: "No auth",
-    authJson: "auth.json",
-  },
-} as const;
-
-function cx(...items: Array<string | false | undefined>) {
-  return items.filter(Boolean).join(" ");
-}
-
-function providerId(name: string) {
-  const slug = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || `provider-${Date.now()}`;
-}
-
-function StatusPill({ active, label }: { active: boolean; label: string }) {
-  return <span className={cx("pill", active ? "pill-ok" : "pill-muted")}>{label}</span>;
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function StatCard({ icon, label, value, ok }: { icon: React.ReactNode; label: string; value: React.ReactNode; ok?: boolean }) {
-  return (
-    <div className="stat-card">
-      <div className={cx("stat-icon", ok ? "stat-icon-ok" : undefined)}>{icon}</div>
-      <div>
-        <p>{label}</p>
-        <strong>{value}</strong>
-      </div>
-    </div>
-  );
-}
-
-function Avatar({ name }: { name: string }) {
-  const initials = name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((s) => s[0]?.toUpperCase())
-    .join("") || "P";
-  return <div className="provider-avatar">{initials}</div>;
-}
-
-
-function OpenAIIcon() {
-  return (
-    <div className="openai-avatar" aria-label="OpenAI Official">
-      <svg viewBox="0 0 64 64" width="30" height="30" role="img">
-        <path
-          d="M31.6 6.5c4.4 0 8.3 2.3 10.5 5.8 4.1.2 8 2.5 10.2 6.3 2.2 3.8 2.1 8.4.2 11.9 1.9 3.7 1.9 8.2-.3 12-2.2 3.8-6.1 6.1-10.2 6.3-2.2 3.5-6.1 5.7-10.5 5.7-4.4 0-8.3-2.2-10.5-5.7-4.1-.2-8-2.5-10.2-6.3-2.2-3.8-2.2-8.3-.3-12-1.9-3.6-1.9-8.1.3-11.9 2.2-3.8 6.1-6.1 10.2-6.3 2.2-3.5 6.1-5.8 10.6-5.8Zm0 5.6c-2.3 0-4.3 1-5.7 2.7l12.1 7V16c0-2.2-2.9-3.9-6.4-3.9Zm11 6.1v14l5-2.9c1.9-1.1 2.1-4.5.4-7.5-1.2-2.2-3.2-3.5-5.4-3.6Zm-23.9.1c-2.1.2-4.1 1.5-5.3 3.6-1.8 3-1.6 6.4.4 7.5l5 2.9v-14Zm5.2 1.2v14.1l7.7 4.5 7.7-4.5V19.5l-7.7 4.5-7.7-4.5Zm-9.2 15.9c-1.9 1.2-2.1 4.5-.4 7.5 1.2 2.1 3.2 3.4 5.3 3.6v-14l-4.9 2.9Zm34 .1-5 2.9v14c2.1-.2 4.1-1.5 5.3-3.6 1.8-3 1.6-6.4-.3-7.3Zm-17.1 8.7-7.7-4.5v5.8c0 2.2 2.9 3.9 6.4 3.9 2.3 0 4.4-1 5.7-2.7l-4.4-2.5Z"
-          fill="currentColor"
-        />
-      </svg>
-    </div>
-  );
-}
-
-
-
-function tomlEscape(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-function extractOpenAiApiKey(authText?: string) {
-  if (!authText?.trim()) return "";
-  try {
-    const parsed = JSON.parse(authText) as { OPENAI_API_KEY?: unknown };
-    return typeof parsed.OPENAI_API_KEY === "string" ? parsed.OPENAI_API_KEY : "";
-  } catch {
-    return "";
-  }
-}
-
-function buildProviderTomlPreview(provider: SavedProvider, state: CodexState | null) {
-  const model = provider.model.trim() || "gpt-5.5";
-  const name = provider.providerName.trim() || "your-provider";
-  const baseUrl = provider.baseUrl.trim().replace(/\/+$/, "") || "https://example.com/v1";
-  const wireApi = provider.wireApi || "responses";
-  const source = state?.configText?.trimEnd() || "";
-  const sourceLines = source ? source.split("\n") : [];
-  const keptLines: string[] = [];
-  let currentSection = "";
-  let skippingCustomProvider = false;
-  let hasReasoningEffort = false;
-
-  for (const line of sourceLines) {
-    const sectionMatch = line.match(/^\s*\[([^\]]+)]\s*$/);
-    if (sectionMatch) {
-      currentSection = sectionMatch[1].trim();
-      skippingCustomProvider = currentSection === "model_providers.custom";
-      if (skippingCustomProvider) continue;
-    }
-    if (skippingCustomProvider) continue;
-
-    if (!currentSection) {
-      const keyMatch = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
-      const key = keyMatch?.[1];
-      if (key === "model_provider" || key === "model") continue;
-      if (key === "model_reasoning_effort") hasReasoningEffort = true;
-    }
-    keptLines.push(line);
-  }
-
-  const firstSectionIndex = keptLines.findIndex((line) => /^\s*\[[^\]]+]\s*$/.test(line));
-  const rootLines = (firstSectionIndex === -1 ? keptLines : keptLines.slice(0, firstSectionIndex)).filter((line, index, lines) => {
-    if (line.trim()) return true;
-    return index > 0 && index < lines.length - 1;
-  });
-  const sectionLines = firstSectionIndex === -1 ? [] : keptLines.slice(firstSectionIndex).filter((line, index, lines) => {
-    if (line.trim()) return true;
-    return index > 0 && index < lines.length - 1;
-  });
-
-  const headerLines = [
-    'model_provider = "custom"',
-    `model = "${tomlEscape(model)}"`,
-  ];
-  if (!hasReasoningEffort) {
-    headerLines.push('model_reasoning_effort = "high"');
-  }
-
-  const providerLines = [
-    "[model_providers.custom]",
-    `name = "${tomlEscape(name)}"`,
-    `base_url = "${tomlEscape(baseUrl)}"`,
-    `wire_api = "${tomlEscape(wireApi)}"`,
-    `requires_openai_auth = ${provider.requiresOpenaiAuth ? "true" : "false"}`,
-  ];
-
-  return [
-    ...headerLines,
-    ...(rootLines.length ? ["", ...rootLines] : []),
-    "",
-    ...providerLines,
-    ...(sectionLines.length ? ["", ...sectionLines] : []),
-  ].join("\n");
-}
-
-
-function buildProviderAuthPreview(provider: SavedProvider) {
-  const key = provider.apiKey?.trim();
-  return JSON.stringify({ OPENAI_API_KEY: key || null }, null, 2);
-}
-
-
-function instructionIdFromPath(path?: string) {
-  if (!path) return "";
-  const normalized = path.replace(/\\/g, "/");
-  const found = instructionTemplates.find((item) => normalized.endsWith(item.filename));
-  return found?.id || "custom";
-}
-
-function JsonPreview({ text }: { text: string }) {
-  return (
-    <pre className="toml-preview json-preview" aria-label="JSON preview">
-      {text.split("\n").map((line, index) => (
-        <div className="toml-line" key={index}>
-          <span className="toml-line-no">{index + 1}</span>
-          <code>{line}</code>
-        </div>
-      ))}
-    </pre>
-  );
-}
-
-function renderTomlValue(value: string, lineKey: string) {
-  const parts = value.split(/("(?:\\.|[^"])*")/g);
-  return parts.map((part, index) => {
-    if (!part) return null;
-    const key = `${lineKey}-v-${index}`;
-    if (/^"(?:\\.|[^"])*"$/.test(part)) {
-      return <span className="toml-string" key={key}>{part}</span>;
-    }
-    const boolParts = part.split(/\b(true|false)\b/g);
-    return boolParts.map((piece, boolIndex) => {
-      if (piece === "true" || piece === "false") {
-        return <span className="toml-bool" key={`${key}-b-${boolIndex}`}>{piece}</span>;
-      }
-      return <React.Fragment key={`${key}-t-${boolIndex}`}>{piece}</React.Fragment>;
-    });
-  });
-}
-
-function renderTomlLine(line: string, index: number) {
-  const key = `toml-${index}`;
-  if (line.trim().startsWith("#")) {
-    return <span className="toml-comment">{line}</span>;
-  }
-  if (/^\s*\[[^\]]+\]\s*$/.test(line)) {
-    return <span className="toml-section">{line}</span>;
-  }
-  const eqIndex = line.indexOf("=");
-  if (eqIndex > -1) {
-    const left = line.slice(0, eqIndex);
-    const right = line.slice(eqIndex + 1);
-    return (
-      <>
-        <span className="toml-key">{left}</span>
-        <span className="toml-eq">=</span>
-        {renderTomlValue(right, key)}
-      </>
-    );
-  }
-  return <>{line}</>;
-}
-
-function TomlPreview({ text }: { text: string }) {
-  return (
-    <pre className="toml-preview" aria-label="TOML preview">
-      {text.split("\n").map((line, index) => (
-        <div className="toml-line" key={index}>
-          <span className="toml-line-no">{index + 1}</span>
-          <code>{renderTomlLine(line, index)}</code>
-        </div>
-      ))}
-    </pre>
-  );
-}
-
-
-function normalizeVersion(value?: string) {
-  return (value || "").trim().replace(/^v/i, "");
-}
-
-function compareVersions(a?: string, b?: string) {
-  const pa = normalizeVersion(a).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
-  const pb = normalizeVersion(b).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
-  const len = Math.max(pa.length, pb.length, 3);
-  for (let i = 0; i < len; i += 1) {
-    const diff = (pa[i] || 0) - (pb[i] || 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
-
-function releaseAssetForPlatform(assets: Array<{ name?: string; browser_download_url?: string }>) {
-  const platform = navigator.userAgent.toLowerCase();
-  const isMac = platform.includes("mac");
-  const isWindows = platform.includes("windows");
-  const isLinux = platform.includes("linux");
-  return assets.find((asset) => {
-    const name = (asset.name || "").toLowerCase();
-    if (isMac) return name.endsWith(".dmg") || name.endsWith(".app.tar.gz");
-    if (isWindows) return name.endsWith(".msi") || name.endsWith(".exe");
-    if (isLinux) return name.endsWith(".appimage") || name.endsWith(".deb") || name.endsWith(".rpm");
-    return Boolean(name);
-  }) || assets[0];
-}
-
-function formatSessionTime(value?: number | null) {
-  if (!value) return "未知时间";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "未知时间";
-  return date.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function compactPath(value?: string | null, max = 58) {
-  if (!value) return "未记录路径";
-  const normalized = value.replace(/\\/g, "/");
-  if (normalized.length <= max) return normalized;
-  const parts = normalized.split("/").filter(Boolean);
-  if (parts.length >= 3) {
-    const tail = parts.slice(-3).join("/");
-    return `…/${tail}`;
-  }
-  return `…${normalized.slice(-max + 1)}`;
-}
-
-function shortId(value: string) {
-  return value.length > 8 ? value.slice(0, 8) : value;
-}
 
 function App() {
   const initialLang = (localStorage.getItem(LANG_KEY) as Lang | null) || "zh";
   const [lang, setLang] = React.useState<Lang>(initialLang === "en" ? "en" : "zh");
-  const t = dict[lang];
+  const { t, i18n } = useI18n(lang);
   const isMacRuntime = navigator.userAgent.toLowerCase().includes("mac");
   const [tab, setTab] = React.useState<Tab>("dashboard");
   const [providerMode, setProviderMode] = React.useState<ProviderMode>("list");
@@ -734,6 +93,7 @@ function App() {
   const [state, setState] = React.useState<CodexState | null>(null);
   const [backups, setBackups] = React.useState<BackupEntry[]>([]);
   const [configDir, setConfigDir] = React.useState("");
+  const configDirArg = configDir || null;
   const [loading, setLoading] = React.useState(false);
   const [toast, setToast] = React.useState<string>("");
   const [error, setError] = React.useState<string>("");
@@ -746,13 +106,13 @@ function App() {
   const providerTomlPreview = React.useMemo(() => buildProviderTomlPreview(providerForm, state), [providerForm, state]);
   const providerAuthPreview = React.useMemo(() => buildProviderAuthPreview(providerForm), [providerForm]);
   const currentInstructionId = instructionIdFromPath(state?.instructionFile);
-  const releaseStatusLabel = React.useMemo(() => {
-    if (releaseInfo.status === "checking") return lang === "zh" ? "检查中" : "Checking";
-    if (releaseInfo.status === "error") return lang === "zh" ? "失败" : "Failed";
-    if (releaseInfo.hasUpdate) return lang === "zh" ? "有更新" : "Update found";
-    if (releaseInfo.status === "ok") return lang === "zh" ? "已是最新" : "Up to date";
-    return lang === "zh" ? "未检查" : "Idle";
-  }, [lang, releaseInfo.hasUpdate, releaseInfo.status]);
+    const releaseStatusLabel = React.useMemo(() => {
+    if (releaseInfo.status === "checking") return i18n("检查中", "Checking");
+    if (releaseInfo.status === "error") return i18n("失败", "Failed");
+    if (releaseInfo.hasUpdate) return i18n("有更新", "Update found");
+    if (releaseInfo.status === "ok") return i18n("已是最新", "Up to date");
+    return i18n("未检查", "Idle");
+  }, [i18n, releaseInfo.hasUpdate, releaseInfo.status]);
 
   React.useEffect(() => {
     localStorage.setItem(LANG_KEY, lang);
@@ -833,12 +193,12 @@ function App() {
   const refresh = React.useCallback(() => {
     call(
       async () => {
-        const next = await invoke<CodexState>("get_codex_state", { configDir: configDir || null });
+        const next = await invoke<CodexState>("get_codex_state", { configDir: configDirArg });
         const backupList = await invoke<BackupEntry[]>("list_backups");
         const providerList = await invoke<SavedProvider[]>("list_saved_providers");
         const promptList = await invoke<SavedPrompt[]>("list_saved_prompts");
-        const about = await invoke<AboutInfo>("get_about_info", { configDir: configDir || null });
-        const sessions = await invoke<SessionSyncStatus>("get_session_sync_status", { configDir: configDir || null, targetProvider: null });
+        const about = await invoke<AboutInfo>("get_about_info", { configDir: configDirArg });
+        const sessions = await invoke<SessionSyncStatus>("get_session_sync_status", { configDir: configDirArg, targetProvider: null });
         return { next, backupList, providerList, promptList, about, sessions };
       },
       ({ next, backupList, providerList, promptList, about, sessions }) => {
@@ -865,32 +225,27 @@ function App() {
     invoke<SavedPrompt[]>("list_saved_prompts").then(setSavedPrompts).catch(() => undefined);
   };
 
-  const enableInstruction = () =>
-    call(() => invoke<ActionResult>("enable_instruction", { configDir: configDir || null }), handleActionResult);
+  const action = (command: string, args: Record<string, unknown> = {}) =>
+    call(() => invoke<ActionResult>(command, args), handleActionResult);
 
-  const switchInstructionTemplate = (templateId: string) =>
-    call(
-      () => invoke<ActionResult>("enable_instruction_template", { configDir: configDir || null, templateId }),
-      handleActionResult,
-    );
+    const enableInstruction = () =>
+    action("enable_instruction", { configDir: configDirArg });
 
-  const disableInstruction = () =>
-    call(
-      () => invoke<ActionResult>("disable_instruction", { configDir: configDir || null, deleteFile: true }),
-      handleActionResult,
-    );
+    const switchInstructionTemplate = (templateId: string) =>
+    action("enable_instruction_template", { configDir: configDirArg, templateId });
 
-  const openAddPrompt = () => {
-    setEditingPromptId(null);
-    setPromptForm({ ...blankPromptForm });
-    setInstructionMode("form");
-  };
+    const disableInstruction = () =>
+    action("disable_instruction", { configDir: configDirArg, deleteFile: true });
 
-  const openEditPrompt = (prompt: SavedPrompt) => {
-    setEditingPromptId(prompt.id);
+    const setPromptFormMode = (prompt: SavedPrompt, editingId: string | null) => {
+    setEditingPromptId(editingId);
     setPromptForm(prompt);
     setInstructionMode("form");
   };
+  const openAddPrompt = () => setPromptFormMode({ ...blankPromptForm }, null);
+  const openEditPrompt = (prompt: SavedPrompt) => setPromptFormMode(prompt, prompt.id);
+
+  
 
   const normalizedPromptForm = (): SavedPrompt => ({
     ...promptForm,
@@ -910,7 +265,7 @@ function App() {
         setSavedPrompts(promptList);
         setInstructionMode("list");
         setEditingPromptId(null);
-        setToast(lang === "zh" ? "提示词已保存" : "Prompt saved");
+        setToast(i18n("提示词已保存", "Prompt saved"));
       },
     );
 
@@ -918,7 +273,7 @@ function App() {
     call(
       async () => {
         const saved = await invoke<SavedPrompt>("save_prompt", { prompt: normalizedPromptForm() });
-        const result = await invoke<ActionResult>("enable_saved_prompt", { configDir: configDir || null, id: saved.id });
+        const result = await invoke<ActionResult>("enable_saved_prompt", { configDir: configDirArg, id: saved.id });
         const promptList = await invoke<SavedPrompt[]>("list_saved_prompts");
         return { result, promptList };
       },
@@ -930,8 +285,8 @@ function App() {
       },
     );
 
-  const enableSavedPrompt = (id: string) =>
-    call(() => invoke<ActionResult>("enable_saved_prompt", { configDir: configDir || null, id }), handleActionResult);
+    const enableSavedPrompt = (id: string) =>
+    action("enable_saved_prompt", { configDir: configDirArg, id });
 
   const removeSavedPrompt = (id: string) =>
     call(
@@ -941,7 +296,7 @@ function App() {
       },
       (promptList) => {
         setSavedPrompts(promptList);
-        setToast(lang === "zh" ? "提示词已删除" : "Prompt deleted");
+        setToast(i18n("提示词已删除", "Prompt deleted"));
       },
     );
 
@@ -973,26 +328,22 @@ function App() {
         setSavedProviders(providerList);
         setProviderMode("list");
         setEditingProviderId(null);
-        setToast(lang === "zh" ? "供应商已保存到 SQLite" : "Provider saved to SQLite");
+        setToast(i18n("供应商已保存到 SQLite", "Provider saved to SQLite"));
       },
     );
 
-  const switchProvider = (provider: SavedProvider) =>
-    call(
-      () =>
-        invoke<ActionResult>("switch_provider", {
-          input: {
-            configDir: configDir || null,
-            providerName: provider.providerName,
-            baseUrl: provider.baseUrl,
-            model: provider.model,
-            apiKey: provider.apiKey || "",
-            wireApi: provider.wireApi,
-            requiresOpenaiAuth: provider.requiresOpenaiAuth,
-          },
-        }),
-      handleActionResult,
-    );
+    const switchProvider = (provider: SavedProvider) =>
+    action("switch_provider", {
+      input: {
+        configDir: configDirArg,
+        providerName: provider.providerName,
+        baseUrl: provider.baseUrl,
+        model: provider.model,
+        apiKey: provider.apiKey || "",
+        wireApi: provider.wireApi,
+        requiresOpenaiAuth: provider.requiresOpenaiAuth,
+      },
+    });
 
   const saveAndSwitch = () =>
     call(
@@ -1000,7 +351,7 @@ function App() {
         const saved = await invoke<SavedProvider>("save_provider", { provider: normalizedProviderForm() });
         const result = await invoke<ActionResult>("save_provider_toml_config", {
           input: {
-            configDir: configDir || null,
+            configDir: configDirArg,
             configText: providerTomlDraft || buildProviderTomlPreview(saved, state),
             apiKey: saved.apiKey || "",
           },
@@ -1017,11 +368,8 @@ function App() {
       },
     );
 
-  const switchOfficialProvider = () =>
-    call(
-      () => invoke<ActionResult>("switch_official_provider", { configDir: configDir || null }),
-      handleActionResult,
-    );
+    const switchOfficialProvider = () =>
+    action("switch_official_provider", { configDir: configDirArg });
 
   const importFromCcSwitch = () =>
     call(
@@ -1030,24 +378,22 @@ function App() {
         setSavedProviders(result.providers);
         const warningText = result.warnings.length > 0 ? `，跳过 ${result.skipped}` : "";
         setToast(
-          lang === "zh"
-            ? `已从 cc-switch 导入 ${result.imported} 个供应商${warningText}`
-            : `Imported ${result.imported} provider(s) from cc-switch${warningText}`,
+          i18n(`已从 cc-switch 导入 ${result.imported} 个供应商${warningText}`, `Imported ${result.imported} provider(s) from cc-switch${warningText}`),
         );
       },
     );
 
-  const restoreBackup = (backupId: string) =>
-    call(() => invoke<ActionResult>("restore_backup", { configDir: configDir || null, backupId }), handleActionResult);
+    const restoreBackup = (backupId: string) =>
+    action("restore_backup", { configDir: configDirArg, backupId });
 
-  const openExternalUrl = React.useCallback((url?: string | null) => {
+    const openExternalUrl = React.useCallback((url?: string | null) => {
     if (!url) return;
     window.setTimeout(() => {
       void invoke("open_url", { url }).catch(() => {
-        setToast(lang === "zh" ? "打开浏览器失败" : "Failed to open browser");
+        setToast(i18n("打开浏览器失败", "Failed to open browser"));
       });
     }, 0);
-  }, [lang]);
+  }, [i18n]);
 
   const checkForUpdates = React.useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
     const repo = aboutInfo?.githubRepo || FALLBACK_GITHUB_REPO;
@@ -1072,8 +418,8 @@ function App() {
       const asset = releaseAssetForPlatform(release.assets || []);
       const hasUpdate = compareVersions(latestVersion, appVersion) > 0;
       const message = hasUpdate
-        ? (lang === "zh" ? "发现新版本" : "Update available")
-        : (lang === "zh" ? "当前已是最新版本" : "You are up to date");
+        ? (i18n("发现新版本", "Update available"))
+        : (i18n("当前已是最新版本", "You are up to date"));
       setReleaseInfo({
         status: "ok",
         latestVersion,
@@ -1085,7 +431,7 @@ function App() {
       });
       if (hasUpdate) {
         if (quiet) {
-          setToast(lang === "zh" ? `发现新版本 ${latestVersion}，可在概览页查看` : `New version ${latestVersion} is available`);
+          setToast(i18n(`发现新版本 ${latestVersion}，可在概览页查看`, `New version ${latestVersion} is available`));
         } else {
           setUpdatePromptOpen(true);
         }
@@ -1093,14 +439,14 @@ function App() {
         setToast(message);
       }
     } catch (e) {
-      const message = quiet ? (lang === "zh" ? "自动检查失败" : "Auto check failed") : (lang === "zh" ? "检查失败" : "Check failed");
+      const message = quiet ? (i18n("自动检查失败", "Auto check failed")) : (i18n("检查失败", "Check failed"));
       setReleaseInfo({
         status: "error",
         message,
       });
       if (!quiet) setToast(message);
     }
-  }, [aboutInfo?.githubRepo, aboutInfo?.appVersion, lang]);
+  }, [aboutInfo?.githubRepo, aboutInfo?.appVersion, i18n]);
 
   React.useEffect(() => {
     if (!state || !aboutInfo || autoUpdateCheckedRef.current) return;
@@ -1131,43 +477,28 @@ function App() {
     void loadCcSwitchOfficialAuth(false);
   };
 
-  const saveOfficialConfig = () =>
-    call(
-      () =>
-        invoke<ActionResult>("save_official_config", {
-          input: {
-            configDir: configDir || null,
-            model: officialForm.model,
-            authJson: officialForm.authJson,
-          },
-        }),
-      (result) => {
-        handleActionResult(result);
-        setProviderMode("list");
+    const saveOfficialConfig = () =>
+    action("save_official_config", {
+      input: {
+        configDir: configDirArg,
+        model: officialForm.model,
+        authJson: officialForm.authJson,
       },
-    );
+    });
 
-  const openAddProvider = () => {
-    const next = { ...blankProviderForm };
-    setEditingProviderId(null);
-    setProviderForm(next);
-    setProviderTomlDraft(buildProviderTomlPreview(next, state));
-    setProviderTomlDirty(false);
-    setProviderMode("form");
-  };
-
-  const openEditProvider = (provider: SavedProvider) => {
-    setEditingProviderId(provider.id);
+    const setProviderFormMode = (provider: SavedProvider, editingId: string | null) => {
+    setEditingProviderId(editingId);
     setProviderForm(provider);
     setProviderTomlDraft(buildProviderTomlPreview(provider, state));
     setProviderTomlDirty(false);
     setProviderMode("form");
   };
-
+  const openAddProvider = () => setProviderFormMode({ ...blankProviderForm }, null);
+  const openEditProvider = (provider: SavedProvider) => setProviderFormMode(provider, provider.id);
   const openEditDetectedProvider = (provider: { id: string; providerName: string; baseUrl: string; model: string; wireApi: string; requiresOpenaiAuth: boolean }) => {
-    setEditingProviderId(providerId(provider.providerName || provider.baseUrl));
-    const next = {
-      id: providerId(provider.providerName || provider.baseUrl),
+    const id = providerId(provider.providerName || provider.baseUrl);
+    const next: SavedProvider = {
+      id,
       providerName: provider.providerName,
       baseUrl: provider.baseUrl,
       model: provider.model,
@@ -1175,11 +506,12 @@ function App() {
       wireApi: provider.wireApi || "responses",
       requiresOpenaiAuth: provider.requiresOpenaiAuth,
     };
-    setProviderForm(next);
-    setProviderTomlDraft(buildProviderTomlPreview(next, state));
-    setProviderTomlDirty(false);
-    setProviderMode("form");
+    setProviderFormMode(next, id);
   };
+
+  
+
+  
 
   const removeProvider = (id: string) => {
     call(
@@ -1189,30 +521,28 @@ function App() {
       },
       (providerList) => {
         setSavedProviders(providerList);
-        setToast(lang === "zh" ? "已从 SQLite 删除供应商" : "Provider deleted from SQLite");
+        setToast(i18n("已从 SQLite 删除供应商", "Provider deleted from SQLite"));
       },
     );
   };
 
   const checkSessions = () =>
     call(
-      () => invoke<SessionSyncStatus>("get_session_sync_status", { configDir: configDir || null, targetProvider: null }),
+      () => invoke<SessionSyncStatus>("get_session_sync_status", { configDir: configDirArg, targetProvider: null }),
       (status) => {
         setSessionStatus(status);
         setToast(status.needsSync
-          ? (lang === "zh" ? `发现 ${status.mismatchedSessionMeta + status.mismatchedThreads} 项需要同步` : "Session sync needed")
-          : (lang === "zh" ? "会话已同步" : "Sessions are in sync"));
+          ? (i18n(`发现 ${status.mismatchedSessionMeta + status.mismatchedThreads} 项需要同步`, "Session sync needed"))
+          : (i18n("会话已同步", "Sessions are in sync")));
       },
     );
 
   const syncSessions = () =>
     call(
-      () => invoke<SessionSyncResult>("sync_sessions_provider", { configDir: configDir || null, targetProvider: null }),
+      () => invoke<SessionSyncResult>("sync_sessions_provider", { configDir: configDirArg, targetProvider: null }),
       (result) => {
         setSessionStatus(result.status);
-        setToast(lang === "zh"
-          ? `已修复 ${result.updatedRollouts} 个会话文件、${result.updatedThreads} 条 SQLite 记录`
-          : `Updated ${result.updatedRollouts} rollout file(s), ${result.updatedThreads} SQLite row(s)`);
+        setToast(i18n(`已修复 ${result.updatedRollouts} 个会话文件、${result.updatedThreads} 条 SQLite 记录`, `Updated ${result.updatedRollouts} rollout file(s), ${result.updatedThreads} SQLite row(s)`));
       },
     );
 
@@ -1285,14 +615,14 @@ function App() {
                 <div className="update-icon"><Sparkles size={22} /></div>
                 <div>
                   <p className="eyebrow">Codex-X</p>
-                  <h3>{lang === "zh" ? "发现新版本" : "New version available"}</h3>
+                  <h3>{i18n("发现新版本", "New version available")}</h3>
                 </div>
               </div>
               <div className="update-body">
-                <p>{lang === "zh" ? "检测到新版本，是否立即打开下载页？" : "A new version was found. Open the download page now?"}</p>
+                <p>{i18n("检测到新版本，是否立即打开下载页？", "A new version was found. Open the download page now?")}</p>
                 <div className="about-kv compact">
-                  <div><span>{lang === "zh" ? "当前版本" : "Current"}</span><strong>{aboutInfo?.appVersion || "-"}</strong></div>
-                  <div><span>{lang === "zh" ? "最新版本" : "Latest"}</span><strong>{releaseInfo.latestVersion || "-"}</strong></div>
+                  <div><span>{i18n("当前版本", "Current")}</span><strong>{aboutInfo?.appVersion || "-"}</strong></div>
+                  <div><span>{i18n("最新版本", "Latest")}</span><strong>{releaseInfo.latestVersion || "-"}</strong></div>
                 </div>
               </div>
               <div className="update-actions">
@@ -1300,10 +630,10 @@ function App() {
                   setUpdatePromptOpen(false);
                   openExternalUrl(releaseInfo.htmlUrl);
                 }}>
-                  <Download size={16} /> {lang === "zh" ? "现在下载" : "Download now"}
+                  <Download size={16} /> {i18n("现在下载", "Download now")}
                 </button>
                 <button className="secondary-btn" onClick={() => setUpdatePromptOpen(false)}>
-                  {lang === "zh" ? "稍后" : "Later"}
+                  {i18n("稍后", "Later")}
                 </button>
               </div>
             </div>
@@ -1323,11 +653,11 @@ function App() {
                   <div className="update-strip glass">
                     <div>
                       <span className="update-dot" />
-                      <strong>{lang === "zh" ? "发现新版本" : "New version found"}</strong>
-                      <p>{lang === "zh" ? `Codex-X ${releaseInfo.latestVersion || ""} 已发布` : `Codex-X ${releaseInfo.latestVersion || ""} is available`}</p>
+                      <strong>{i18n("发现新版本", "New version found")}</strong>
+                      <p>{i18n(`Codex-X ${releaseInfo.latestVersion || ""} 已发布`, `Codex-X ${releaseInfo.latestVersion || ""} is available`)}</p>
                     </div>
                     <button className="secondary-btn small" onClick={() => openExternalUrl(releaseInfo.htmlUrl)}>
-                      {lang === "zh" ? "查看更新" : "View"}
+                      {i18n("查看更新", "View")}
                     </button>
                   </div>
                 )}
@@ -1472,13 +802,13 @@ function App() {
                       <section className="provider-section provider-api-section unified-section">
                         <div className="section-title-row">
                           <div>
-                            <strong>{lang === "zh" ? "供应商 API 配置" : "Provider API config"}</strong>
-                            <p>{lang === "zh" ? "和 cc-switch 一样，API 信息、auth.json、config.toml 在同一个编辑页纵向展示。" : "API fields, auth.json and config.toml are shown vertically in one edit page."}</p>
+                            <strong>{i18n("供应商 API 配置", "Provider API config")}</strong>
+                            <p>{i18n("和 cc-switch 一样，API 信息、auth.json、config.toml 在同一个编辑页纵向展示。", "API fields, auth.json and config.toml are shown vertically in one edit page.")}</p>
                           </div>
                         </div>
                         <div className="form-grid provider-form-grid provider-form-cc">
                           <Field label={t.provider.apiKey}><input type="password" value={providerForm.apiKey || ""} onChange={(e) => setProviderForm({ ...providerForm, apiKey: e.target.value })} placeholder={t.provider.apiKeyPlaceholder} /></Field>
-                          <Field label={lang === "zh" ? "API 请求地址" : t.provider.baseUrl}><input value={providerForm.baseUrl} onChange={(e) => setProviderForm({ ...providerForm, baseUrl: e.target.value })} /></Field>
+                          <Field label={i18n("API 请求地址", t.provider.baseUrl)}><input value={providerForm.baseUrl} onChange={(e) => setProviderForm({ ...providerForm, baseUrl: e.target.value })} /></Field>
                           <Field label={t.provider.name}><input value={providerForm.providerName} onChange={(e) => setProviderForm({ ...providerForm, providerName: e.target.value, id: editingProviderId || providerId(e.target.value) })} /></Field>
                           <Field label={t.provider.model}><input value={providerForm.model} onChange={(e) => setProviderForm({ ...providerForm, model: e.target.value })} /></Field>
                           <Field label={t.provider.wireApi}>
@@ -1495,7 +825,7 @@ function App() {
                         <div className="section-title-row">
                           <div>
                             <strong>auth.json (JSON)</strong>
-                            <p>{lang === "zh" ? "预览保存时会写入/保留的认证配置；API Key 留空时不会覆盖现有 auth.json。" : "Preview of auth config. Empty API key will not overwrite the existing auth.json."}</p>
+                            <p>{i18n("预览保存时会写入/保留的认证配置；API Key 留空时不会覆盖现有 auth.json。", "Preview of auth config. Empty API key will not overwrite the existing auth.json.")}</p>
                           </div>
                         </div>
                         <JsonPreview text={providerAuthPreview} />
@@ -1505,9 +835,9 @@ function App() {
                         <div className="section-title-row config-title-row">
                           <div>
                             <strong>config.toml (TOML)</strong>
-                            <p>{lang === "zh" ? "可直接编辑，保存时会写入 Codex live config.toml。" : "Editable. Saved directly to the Codex live config.toml."}</p>
+                            <p>{i18n("可直接编辑，保存时会写入 Codex live config.toml。", "Editable. Saved directly to the Codex live config.toml.")}</p>
                           </div>
-                          <button className="ghost-btn small" onClick={() => { setProviderTomlDraft(providerTomlPreview); setProviderTomlDirty(false); }}>{lang === "zh" ? "重置生成" : "Reset"}</button>
+                          <button className="ghost-btn small" onClick={() => { setProviderTomlDraft(providerTomlPreview); setProviderTomlDirty(false); }}>{i18n("重置生成", "Reset")}</button>
                         </div>
                         <textarea
                           className="provider-toml-editor"
@@ -1531,19 +861,17 @@ function App() {
                 <div className="panel-head provider-title-row">
                   <div>
                     <p className="eyebrow">Provider Sync</p>
-                    <h3>{lang === "zh" ? "会话管理" : "Session management"}</h3>
+                    <h3>{i18n("会话管理", "Session management")}</h3>
                     <p className="muted-desc">
-                      {lang === "zh"
-                        ? "检查并修复 Codex 本地历史会话的 Provider 元数据，让切换供应商后旧 thread 仍能被原生 Codex 识别、打开和续聊。"
-                        : "Check and repair local Codex session provider metadata so old threads stay visible and resumable after provider switching."}
+                      {i18n("检查并修复 Codex 本地历史会话的 Provider 元数据，让切换供应商后旧 thread 仍能被原生 Codex 识别、打开和续聊。", "Check and repair local Codex session provider metadata so old threads stay visible and resumable after provider switching.")}
                     </p>
                   </div>
                   <div className="provider-title-actions">
                     <button className="secondary-btn add-provider-btn" onClick={checkSessions} disabled={loading}>
-                      <RefreshCw size={18} className={cx(loading && "spin")} /> {lang === "zh" ? "检查会话" : "Check"}
+                      <RefreshCw size={18} className={cx(loading && "spin")} /> {i18n("检查会话", "Check")}
                     </button>
                     <button className="primary-btn add-provider-btn" onClick={syncSessions} disabled={loading || !sessionStatus?.needsSync}>
-                      <Zap size={18} /> {lang === "zh" ? "同步 / 修复" : "Sync / repair"}
+                      <Zap size={18} /> {i18n("同步 / 修复", "Sync / repair")}
                     </button>
                   </div>
                 </div>
@@ -1553,31 +881,29 @@ function App() {
                     {sessionStatus?.needsSync ? <AlertCircle size={24} /> : <CheckCircle2 size={24} />}
                   </div>
                   <div>
-                    <strong>{sessionStatus?.needsSync ? (lang === "zh" ? "发现未同步会话" : "Unsynced sessions found") : (lang === "zh" ? "会话已同步" : "Sessions are in sync")}</strong>
-                    <p>{lang === "zh"
-                      ? `目标 Provider：${sessionStatus?.targetProvider || state.modelProvider || "openai"}`
-                      : `Target provider: ${sessionStatus?.targetProvider || state.modelProvider || "openai"}`}</p>
+                    <strong>{sessionStatus?.needsSync ? (i18n("发现未同步会话", "Unsynced sessions found")) : (i18n("会话已同步", "Sessions are in sync"))}</strong>
+                    <p>{i18n(`目标 Provider：${sessionStatus?.targetProvider || state.modelProvider || "openai"}`, `Target provider: ${sessionStatus?.targetProvider || state.modelProvider || "openai"}`)}</p>
                   </div>
-                  {sessionStatus?.needsSync && <StatusPill active label={lang === "zh" ? "需要修复" : "Needs repair"} />}
+                  {sessionStatus?.needsSync && <StatusPill active label={i18n("需要修复", "Needs repair")} />}
                 </div>
 
                 <div className="session-stat-grid">
-                  <StatCard icon={<FileCode2 size={20} />} label={lang === "zh" ? "rollout 文件" : "Rollout files"} value={sessionStatus?.rolloutFiles ?? "-"} ok />
-                  <StatCard icon={<Sparkles size={20} />} label={lang === "zh" ? "session_meta" : "session_meta"} value={sessionStatus?.sessionMetaCount ?? "-"} ok />
-                  <StatCard icon={<AlertCircle size={20} />} label={lang === "zh" ? "未同步 JSONL" : "Unsynced JSONL"} value={sessionStatus?.mismatchedRollouts ?? "-"} ok={!sessionStatus?.mismatchedRollouts} />
-                  <StatCard icon={<Layers3 size={20} />} label={lang === "zh" ? "SQLite threads" : "SQLite threads"} value={sessionStatus?.sqliteThreads ?? "-"} ok />
-                  <StatCard icon={<AlertCircle size={20} />} label={lang === "zh" ? "未同步记录" : "Unsynced rows"} value={sessionStatus?.mismatchedThreads ?? "-"} ok={!sessionStatus?.mismatchedThreads} />
-                  <StatCard icon={<Code2 size={20} />} label={lang === "zh" ? "SQLite 数据库" : "SQLite DBs"} value={sessionStatus?.sqliteDbs ?? "-"} ok />
+                  <StatCard icon={<FileCode2 size={20} />} label={i18n("rollout 文件", "Rollout files")} value={sessionStatus?.rolloutFiles ?? "-"} ok />
+                  <StatCard icon={<Sparkles size={20} />} label={i18n("session_meta", "session_meta")} value={sessionStatus?.sessionMetaCount ?? "-"} ok />
+                  <StatCard icon={<AlertCircle size={20} />} label={i18n("未同步 JSONL", "Unsynced JSONL")} value={sessionStatus?.mismatchedRollouts ?? "-"} ok={!sessionStatus?.mismatchedRollouts} />
+                  <StatCard icon={<Layers3 size={20} />} label={i18n("SQLite threads", "SQLite threads")} value={sessionStatus?.sqliteThreads ?? "-"} ok />
+                  <StatCard icon={<AlertCircle size={20} />} label={i18n("未同步记录", "Unsynced rows")} value={sessionStatus?.mismatchedThreads ?? "-"} ok={!sessionStatus?.mismatchedThreads} />
+                  <StatCard icon={<Code2 size={20} />} label={i18n("SQLite 数据库", "SQLite DBs")} value={sessionStatus?.sqliteDbs ?? "-"} ok />
                 </div>
 
 
                 <div className="session-list-card">
                   <div className="session-list-head">
                     <div>
-                      <p className="eyebrow">{lang === "zh" ? "本地会话" : "Local threads"}</p>
-                      <h4>{lang === "zh" ? "会话列表" : "Sessions"}</h4>
+                      <p className="eyebrow">{i18n("本地会话", "Local threads")}</p>
+                      <h4>{i18n("会话列表", "Sessions")}</h4>
                     </div>
-                    <span>{lang === "zh" ? `展示 ${sessionStatus?.sessions?.length ?? 0} / ${sessionStatus?.sqliteThreads ?? 0} 条` : `${sessionStatus?.sessions?.length ?? 0} / ${sessionStatus?.sqliteThreads ?? 0} shown`}</span>
+                    <span>{i18n(`展示 ${sessionStatus?.sessions?.length ?? 0} / ${sessionStatus?.sqliteThreads ?? 0} 条`, `${sessionStatus?.sessions?.length ?? 0} / ${sessionStatus?.sqliteThreads ?? 0} shown`)}</span>
                   </div>
                   {sessionStatus?.sessions?.length ? (
                     <div className="session-list">
@@ -1588,8 +914,8 @@ function App() {
                             <div className="session-row-text">
                               <div className="session-row-title">
                                 <strong>{item.title}</strong>
-                                {item.archived && <span className="mini-tag">{lang === "zh" ? "已归档" : "Archived"}</span>}
-                                {item.needsSync && <span className="mini-tag warn">{lang === "zh" ? "需同步" : "Needs sync"}</span>}
+                                {item.archived && <span className="mini-tag">{i18n("已归档", "Archived")}</span>}
+                                {item.needsSync && <span className="mini-tag warn">{i18n("需同步", "Needs sync")}</span>}
                               </div>
                               <p title={item.cwd || item.rolloutPath || undefined}>{compactPath(item.cwd || item.rolloutPath)}</p>
                             </div>
@@ -1606,7 +932,7 @@ function App() {
                   ) : (
                     <div className="session-empty">
                       <History size={22} />
-                      <span>{lang === "zh" ? "还没有读取到会话。点击右上角“检查会话”刷新。" : "No sessions loaded. Click Check to refresh."}</span>
+                      <span>{i18n("还没有读取到会话。点击右上角“检查会话”刷新。", "No sessions loaded. Click Check to refresh.")}</span>
                     </div>
                   )}
                 </div>
@@ -1629,7 +955,7 @@ function App() {
                         <h3>{t.instruction.title}</h3>
                       </div>
                       <div className="provider-title-actions">
-                        <button className="primary-btn add-provider-btn" onClick={openAddPrompt}><Plus size={18} /> {lang === "zh" ? "添加提示词" : "Add prompt"}</button>
+                        <button className="primary-btn add-provider-btn" onClick={openAddPrompt}><Plus size={18} /> {i18n("添加提示词", "Add prompt")}</button>
                       </div>
                     </div>
 
@@ -1649,20 +975,20 @@ function App() {
                             </div>
                             <div className="instruction-action-col">
                               <button className="secondary-btn small" onClick={() => switchInstructionTemplate(item.id)} disabled={loading || isCurrent}>{t.instruction.enable}</button>
-                              <button className="ghost-btn small" onClick={disableInstruction} disabled={loading || !isCurrent}>{lang === "zh" ? "禁用" : "Disable"}</button>
+                              <button className="ghost-btn small" onClick={disableInstruction} disabled={loading || !isCurrent}>{i18n("禁用", "Disable")}</button>
                             </div>
                           </div>
                         );
                       })}
 
                       {savedPrompts.map((prompt) => {
-                        const isCurrent = Boolean(state.instructionFile) && (state.instructionFile || "").replace(/\\/g, "/").endsWith(prompt.filename);
+                        const isCurrent = Boolean(state.instructionFile) && isInstructionFile(state.instructionFile, prompt.filename);
                         return (
                           <div className={cx("instruction-row", isCurrent && "selected")} key={prompt.id}>
                             <div className="instruction-icon custom"><FileCode2 size={22} /></div>
                             <div className="instruction-main">
                               <strong>{prompt.title}</strong>
-                              <p>{lang === "zh" ? "自定义指令提示词" : "Custom instruction prompt"}</p>
+                              <p>{i18n("自定义指令提示词", "Custom instruction prompt")}</p>
                               <code>./{prompt.filename}</code>
                             </div>
                             <div className="instruction-status-col">
@@ -1670,7 +996,7 @@ function App() {
                             </div>
                             <div className="instruction-action-col">
                               <button className="secondary-btn small" onClick={() => enableSavedPrompt(prompt.id)} disabled={loading || isCurrent}>{t.instruction.enable}</button>
-                              <button className="ghost-btn small" onClick={disableInstruction} disabled={loading || !isCurrent}>{lang === "zh" ? "禁用" : "Disable"}</button>
+                              <button className="ghost-btn small" onClick={disableInstruction} disabled={loading || !isCurrent}>{i18n("禁用", "Disable")}</button>
                               <button className="ghost-btn small" onClick={() => openEditPrompt(prompt)}>{t.provider.edit}</button>
                               <button className="danger-btn small" onClick={() => removeSavedPrompt(prompt.id)}><Trash2 size={14} /> {t.provider.remove}</button>
                             </div>
@@ -1678,16 +1004,16 @@ function App() {
                         );
                       })}
 
-                      {state.instructionFile && currentInstructionId === "custom" && !savedPrompts.some((p) => state.instructionFile?.replace(/\\/g, "/").endsWith(p.filename)) && (
+                      {state.instructionFile && currentInstructionId === "custom" && !savedPrompts.some((p) => isInstructionFile(state.instructionFile, p.filename)) && (
                         <div className="instruction-row selected">
                           <div className="instruction-icon custom"><FileCode2 size={22} /></div>
                           <div className="instruction-main">
-                            <strong>{lang === "zh" ? "当前自定义指令提示词" : "Current custom prompt"}</strong>
-                            <p>{lang === "zh" ? "当前 model_instructions_file 不是 Codex-X 内置模板。" : "The current model_instructions_file is not a built-in Codex-X template."}</p>
+                            <strong>{i18n("当前自定义指令提示词", "Current custom prompt")}</strong>
+                            <p>{i18n("当前 model_instructions_file 不是 Codex-X 内置模板。", "The current model_instructions_file is not a built-in Codex-X template.")}</p>
                             <code>{state.instructionFile}</code>
                           </div>
                           <div className="instruction-status-col"><StatusPill active label={t.provider.current} /></div>
-                          <div className="instruction-action-col"><button className="ghost-btn small" onClick={disableInstruction} disabled={loading}>{lang === "zh" ? "禁用" : "Disable"}</button></div>
+                          <div className="instruction-action-col"><button className="ghost-btn small" onClick={disableInstruction} disabled={loading}>{i18n("禁用", "Disable")}</button></div>
                         </div>
                       )}
                     </div>
@@ -1697,21 +1023,21 @@ function App() {
                     <div className="panel-head">
                       <div>
                         <p className="eyebrow">Prompt</p>
-                        <h3>{editingPromptId ? (lang === "zh" ? "编辑提示词" : "Edit prompt") : (lang === "zh" ? "添加提示词" : "Add prompt")}</h3>
+                        <h3>{editingPromptId ? (i18n("编辑提示词", "Edit prompt")) : (i18n("添加提示词", "Add prompt"))}</h3>
                       </div>
                       <button className="ghost-btn" onClick={() => setInstructionMode("list")}>{t.provider.cancel}</button>
                     </div>
                     <div className="form-grid prompt-form-grid">
-                      <Field label={lang === "zh" ? "提示词名称" : "Prompt name"}><input value={promptForm.title} onChange={(e) => setPromptForm({ ...promptForm, title: e.target.value, id: editingPromptId || providerId(e.target.value) })} /></Field>
-                      <Field label={lang === "zh" ? "文件名" : "Filename"}><input value={promptForm.filename} onChange={(e) => setPromptForm({ ...promptForm, filename: e.target.value })} placeholder="my-prompt.md" /></Field>
+                      <Field label={i18n("提示词名称", "Prompt name")}><input value={promptForm.title} onChange={(e) => setPromptForm({ ...promptForm, title: e.target.value, id: editingPromptId || providerId(e.target.value) })} /></Field>
+                      <Field label={i18n("文件名", "Filename")}><input value={promptForm.filename} onChange={(e) => setPromptForm({ ...promptForm, filename: e.target.value })} placeholder="my-prompt.md" /></Field>
                       <label className="field prompt-content-field">
-                        <span>{lang === "zh" ? "提示词内容" : "Prompt content"}</span>
+                        <span>{i18n("提示词内容", "Prompt content")}</span>
                         <textarea className="prompt-editor" value={promptForm.content} onChange={(e) => setPromptForm({ ...promptForm, content: e.target.value })} spellCheck={false} />
                       </label>
                     </div>
                     <div className="form-actions">
-                      <button className="secondary-btn big" onClick={savePromptOnly} disabled={loading}>{lang === "zh" ? "保存" : "Save"}</button>
-                      <button className="primary-btn big" onClick={saveAndEnablePrompt} disabled={loading}><Zap size={18} /> {lang === "zh" ? "保存并启用" : "Save & enable"}</button>
+                      <button className="secondary-btn big" onClick={savePromptOnly} disabled={loading}>{i18n("保存", "Save")}</button>
+                      <button className="primary-btn big" onClick={saveAndEnablePrompt} disabled={loading}><Zap size={18} /> {i18n("保存并启用", "Save & enable")}</button>
                     </div>
                   </div>
                 )}
@@ -1738,32 +1064,32 @@ function App() {
               <section className="about-page">
                 <section className="panel glass about-card">
                   <div className="panel-head compact">
-                    <div><p className="eyebrow">About</p><h3>{lang === "zh" ? "关于 Codex-X" : "About Codex-X"}</h3></div>
+                    <div><p className="eyebrow">About</p><h3>{i18n("关于 Codex-X", "About Codex-X")}</h3></div>
                   </div>
                   <div className="about-kv">
-                    <div><span>Codex-X {lang === "zh" ? "版本" : "Version"}</span><strong>{aboutInfo?.appVersion || "0.2.0"}</strong></div>
-                    <div><span>Codex {lang === "zh" ? "版本" : "Version"}</span><strong>{aboutInfo?.codexVersion || (lang === "zh" ? "未检测到" : "Not detected")}</strong></div>
+                    <div><span>Codex-X {i18n("版本", "Version")}</span><strong>{aboutInfo?.appVersion || "0.2.0"}</strong></div>
+                    <div><span>Codex {i18n("版本", "Version")}</span><strong>{aboutInfo?.codexVersion || (i18n("未检测到", "Not detected"))}</strong></div>
                     <div><span>CODEX_HOME</span><code>{aboutInfo?.codexDir || state.codexDir}</code></div>
-                    <div><span>{lang === "zh" ? "项目地址" : "Project"}</span><code>{aboutInfo?.projectUrl || `https://github.com/${FALLBACK_GITHUB_REPO}`}</code></div>
+                    <div><span>{i18n("项目地址", "Project")}</span><code>{aboutInfo?.projectUrl || `https://github.com/${FALLBACK_GITHUB_REPO}`}</code></div>
                   </div>
                   <div className="about-actions">
-                    <button className="secondary-btn" onClick={() => openExternalUrl(aboutInfo?.projectUrl || `https://github.com/${FALLBACK_GITHUB_REPO}`)}><ExternalLink size={16} /> {lang === "zh" ? "打开项目主页" : "Open project"}</button>
-                    <button className="ghost-btn" onClick={() => openExternalUrl(`${aboutInfo?.projectUrl || `https://github.com/${FALLBACK_GITHUB_REPO}`}/issues`)}><ExternalLink size={16} /> {lang === "zh" ? "反馈问题" : "Issues"}</button>
+                    <button className="secondary-btn" onClick={() => openExternalUrl(aboutInfo?.projectUrl || `https://github.com/${FALLBACK_GITHUB_REPO}`)}><ExternalLink size={16} /> {i18n("打开项目主页", "Open project")}</button>
+                    <button className="ghost-btn" onClick={() => openExternalUrl(`${aboutInfo?.projectUrl || `https://github.com/${FALLBACK_GITHUB_REPO}`}/issues`)}><ExternalLink size={16} /> {i18n("反馈问题", "Issues")}</button>
                   </div>
                 </section>
 
                 <section className="panel glass about-card">
                   <div className="panel-head compact">
-                    <div><p className="eyebrow">GitHub Releases</p><h3>{lang === "zh" ? "更新检查" : "Update check"}</h3></div>
+                    <div><p className="eyebrow">GitHub Releases</p><h3>{i18n("更新检查", "Update check")}</h3></div>
                     <span className={cx("update-status-pill", releaseInfo.hasUpdate && "available")}>{releaseStatusLabel}</span>
                   </div>
                   <div className="about-kv">
-                    <div><span>{lang === "zh" ? "状态" : "Status"}</span><strong>{releaseStatusLabel}</strong></div>
-                    <div><span>{lang === "zh" ? "最新版本" : "Latest"}</span><strong>{releaseInfo.latestVersion || "-"}</strong></div>
+                    <div><span>{i18n("状态", "Status")}</span><strong>{releaseStatusLabel}</strong></div>
+                    <div><span>{i18n("最新版本", "Latest")}</span><strong>{releaseInfo.latestVersion || "-"}</strong></div>
                   </div>
                   <div className="about-actions">
-                    <button className="primary-btn" onClick={() => void checkForUpdates()} disabled={releaseInfo.status === "checking"}><RefreshCw size={16} className={cx(releaseInfo.status === "checking" && "spin")} /> {lang === "zh" ? "检查更新" : "Check updates"}</button>
-                    <button className="secondary-btn" onClick={() => openExternalUrl(releaseInfo.htmlUrl)} disabled={!releaseInfo.htmlUrl}><Download size={16} /> {lang === "zh" ? "打开下载页" : "Open releases"}</button>
+                    <button className="primary-btn" onClick={() => void checkForUpdates()} disabled={releaseInfo.status === "checking"}><RefreshCw size={16} className={cx(releaseInfo.status === "checking" && "spin")} /> {i18n("检查更新", "Check updates")}</button>
+                    <button className="secondary-btn" onClick={() => openExternalUrl(releaseInfo.htmlUrl)} disabled={!releaseInfo.htmlUrl}><Download size={16} /> {i18n("打开下载页", "Open releases")}</button>
                   </div>
                 </section>
               </section>
