@@ -10,7 +10,9 @@
     "tauri": "tauri",
     "dev:renderer": "vite --host 127.0.0.1 --port 1420",
     "build:renderer": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
@@ -24,7 +26,9 @@
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.2.0",
     "typescript": "^5.3.0",
-    "vite": "^7.3.0"
+    "vite": "^7.3.0",
+    "vitest": "^4.1.9",
+    "@vitest/coverage-v8": "^4.1.9"
   },
   "author": "yynxxxxx"
 }

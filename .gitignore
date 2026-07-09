@@ -24,6 +24,9 @@ apps/desktop/src-tauri/gen/schemas/
 .env.*
 *.local
 
+# Coverage / test artifacts
+coverage/
+
 # Backups
 *.bak
 *.bak_*
